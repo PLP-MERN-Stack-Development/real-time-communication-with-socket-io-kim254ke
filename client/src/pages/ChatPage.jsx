@@ -1,6 +1,6 @@
-// client/src/pages/ChatPage.jsx - ENHANCED VERSION
+// client/src/pages/ChatPage.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Users, Bell, Download, Settings } from 'lucide-react';
+import { Search, Users, Bell, Download } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { useNotification } from '../hooks/useNotification';
 import ChatMessage from '../components/ChatMessage';
@@ -19,6 +19,7 @@ const ChatPage = ({ username, onLogout }) => {
     sendMessage,
     setTyping,
     joinRoom,
+    socket
   } = useSocket();
 
   const { notify } = useNotification();
@@ -28,55 +29,56 @@ const ChatPage = ({ username, onLogout }) => {
   const [notifications, setNotifications] = useState(0);
   const [unreadCounts, setUnreadCounts] = useState({});
   const [reactions, setReactions] = useState({});
+  const [localMessages, setLocalMessages] = useState(messages);
   const messagesEndRef = useRef(null);
   const prevMessagesLengthRef = useRef(messages.length);
 
+  // Keep local messages synced with server messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setLocalMessages(messages);
   }, [messages]);
-  
 
   useEffect(() => {
-    if (messages.length > prevMessagesLengthRef.current) {
-      const newMessage = messages[messages.length - 1];
-      
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [localMessages]);
+
+  useEffect(() => {
+    if (localMessages.length > prevMessagesLengthRef.current) {
+      const newMessage = localMessages[localMessages.length - 1];
       if (newMessage && !newMessage.system && newMessage.sender !== username) {
         if (newMessage.room !== currentRoom) {
-          setUnreadCounts((prev) => ({
+          setUnreadCounts(prev => ({
             ...prev,
-            [newMessage.room]: (prev[newMessage.room] || 0) + 1,
+            [newMessage.room]: (prev[newMessage.room] || 0) + 1
           }));
-          setNotifications((prev) => prev + 1);
+          setNotifications(prev => prev + 1);
           notify(newMessage);
         }
       }
     }
-    prevMessagesLengthRef.current = messages.length;
-  }, [messages, currentRoom, username, notify]);
+    prevMessagesLengthRef.current = localMessages.length;
+  }, [localMessages, currentRoom, username, notify]);
 
-  const handleRoomChange = (room) => {
+  const handleRoomChange = room => {
     joinRoom(room);
-    setUnreadCounts((prev) => {
+    setUnreadCounts(prev => {
       const newCounts = { ...prev };
       const roomUnread = newCounts[room] || 0;
       newCounts[room] = 0;
-      setNotifications((n) => Math.max(0, n - roomUnread));
+      setNotifications(n => Math.max(0, n - roomUnread));
       return newCounts;
     });
   };
 
-  const handleSendMessage = (message) => {
+  const handleSendMessage = message => {
     sendMessage(message, currentRoom);
   };
 
   const handleImageUpload = (image, caption) => {
-    // Convert image to base64 for demo
     const reader = new FileReader();
     reader.onloadend = () => {
       const imageData = reader.result;
-      // Send message with image
-      sendMessage(caption || 'Sent an image', currentRoom);
-      // In production, you'd upload to a server and send the URL
+      sendMessage(caption || 'Sent an image', currentRoom, imageData);
     };
     reader.readAsDataURL(image);
   };
@@ -87,34 +89,77 @@ const ChatPage = ({ username, onLogout }) => {
   };
 
   const handleAddReaction = (messageId, emoji) => {
-    setReactions((prev) => ({
+    setReactions(prev => ({
       ...prev,
-      [messageId]: [...(prev[messageId] || []), emoji],
+      [messageId]: [...(prev[messageId] || []), emoji]
     }));
   };
 
+  // ✅ Edit Message Feature
   const handleEditMessage = (messageId, newText) => {
-    // In production, emit socket event to edit message
-    console.log('Edit message:', messageId, newText);
+    if (!messageId) return;
+
+    const updated = localMessages.map(msg =>
+      msg.id === messageId ? { ...msg, message: newText, edited: true } : msg
+    );
+    setLocalMessages(updated);
+
+    if (socket) socket.emit('editMessage', { messageId, newText, room: currentRoom });
   };
 
-  const handleDeleteMessage = (messageId) => {
-    // In production, emit socket event to delete message
-    console.log('Delete message:', messageId);
+  // ✅ Delete Message Feature
+  const handleDeleteMessage = messageId => {
+    if (!messageId) return;
+
+    const updated = localMessages.filter(msg => msg.id !== messageId);
+    setLocalMessages(updated);
+
+    if (socket) socket.emit('deleteMessage', { messageId, room: currentRoom });
   };
 
-  // In ChatPage.jsx - handlePrivateMessage
-const handlePrivateMessage = (userId, username) => {
-    const privateRoomId = `private-${Math.min(userId, socket.id)}-${Math.max(userId, socket.id)}`;
+  // Listen for edits and deletions from others
+  useEffect(() => {
+    if (!socket) return;
+
+    const onEditMessage = ({ messageId, newText }) => {
+      setLocalMessages(prev =>
+        prev.map(msg =>
+          msg.id === messageId ? { ...msg, message: newText, edited: true } : msg
+        )
+      );
+    };
+
+    const onDeleteMessage = ({ messageId }) => {
+      setLocalMessages(prev => prev.filter(msg => msg.id !== messageId));
+    };
+
+    socket.on('messageEdited', onEditMessage);
+    socket.on('messageDeleted', onDeleteMessage);
+
+    return () => {
+      socket.off('messageEdited', onEditMessage);
+      socket.off('messageDeleted', onDeleteMessage);
+    };
+  }, [socket]);
+
+  const handlePrivateMessage = (userId, username) => {
+    const privateRoomId = `private-${Math.min(userId, socket.id)}-${Math.max(
+      userId,
+      socket.id
+    )}`;
     joinRoom(privateRoomId);
-    // Open private chat UI
   };
 
   const handleExportChat = () => {
-    const chatData = filteredMessages.map(msg => 
-      `[${new Date(msg.timestamp).toLocaleString()}] ${msg.sender}: ${msg.message}`
-    ).join('\n');
-    
+    const chatData = filteredMessages
+      .map(
+        msg =>
+          `[${new Date(msg.timestamp).toLocaleString()}] ${
+            msg.sender
+          }: ${msg.message}${msg.edited ? ' (edited)' : ''}`
+      )
+      .join('\n');
+
     const blob = new Blob([chatData], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -123,10 +168,10 @@ const handlePrivateMessage = (userId, username) => {
     a.click();
   };
 
-  const filteredMessages = messages
-    .filter((msg) => !msg.room || msg.room === currentRoom)
+  const filteredMessages = localMessages
+    .filter(msg => !msg.room || msg.room === currentRoom)
     .filter(
-      (msg) =>
+      msg =>
         searchQuery === '' ||
         msg.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         msg.sender?.toLowerCase().includes(searchQuery.toLowerCase())
@@ -146,41 +191,26 @@ const handlePrivateMessage = (userId, username) => {
       />
 
       <div className="flex-1 flex flex-col">
-        {/* Enhanced Header */}
+        {/* Header */}
         <div className="bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div>
-                <h1 className="text-2xl font-bold text-gray-800 flex items-center">
-                  #{currentRoom}
-                  {!isConnected && (
-                    <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-1 rounded-full">
-                      Reconnecting...
-                    </span>
-                  )}
-                </h1>
-                <div className="flex items-center space-x-2 text-sm text-gray-600 mt-1">
-                  <span>{users.length} members online</span>
-                  {typingUsers.length > 0 && (
-                    <>
-                      <span>•</span>
-                      <span className="text-purple-600 animate-pulse">
-                        {typingUsers.length} typing...
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+            <h1 className="text-2xl font-bold text-gray-800 flex items-center">
+              {currentRoom}
+              {!isConnected && (
+                <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-1 rounded-full">
+                  Reconnecting...
+                </span>
+              )}
+            </h1>
 
             <div className="flex items-center space-x-3">
-              {/* Search Bar */}
+              {/* Search */}
               <div className="relative">
                 <input
                   type="text"
                   placeholder="Search messages..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={e => setSearchQuery(e.target.value)}
                   className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-purple-600 w-64"
                 />
                 <Search className="w-5 h-5 text-gray-400 absolute left-3 top-2.5" />
@@ -194,7 +224,7 @@ const handlePrivateMessage = (userId, username) => {
                 )}
               </div>
 
-              {/* Export Chat */}
+              {/* Export */}
               <button
                 onClick={handleExportChat}
                 className="p-2 hover:bg-gray-100 rounded-lg transition"
@@ -213,29 +243,30 @@ const handlePrivateMessage = (userId, username) => {
                 </div>
               )}
 
-              {/* Users Toggle */}
+              {/* Users */}
               <button
                 onClick={() => setShowUsers(!showUsers)}
-                className={`p-2 hover:bg-gray-100 rounded-lg transition ${showUsers ? 'bg-purple-100' : ''}`}
+                className={`p-2 hover:bg-gray-100 rounded-lg transition ${
+                  showUsers ? 'bg-purple-100' : ''
+                }`}
                 title="Show users"
               >
-                <Users className={`w-6 h-6 ${showUsers ? 'text-purple-600' : 'text-gray-600'}`} />
+                <Users
+                  className={`w-6 h-6 ${
+                    showUsers ? 'text-purple-600' : 'text-gray-600'
+                  }`}
+                />
               </button>
             </div>
           </div>
         </div>
 
-        {/* Messages Area */}
+        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-6 bg-gradient-to-b from-gray-50 to-white">
           {filteredMessages.length === 0 ? (
             <div className="text-center text-gray-500 mt-20">
-              <div className="bg-gray-100 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-4">
-                <Search className="w-10 h-10 text-gray-400" />
-              </div>
               <p className="text-lg font-semibold">
-                {searchQuery
-                  ? 'No messages found'
-                  : 'No messages yet'}
+                {searchQuery ? 'No messages found' : 'No messages yet'}
               </p>
               <p className="text-sm mt-2">
                 {searchQuery
@@ -258,36 +289,19 @@ const handlePrivateMessage = (userId, username) => {
               ))}
             </div>
           )}
-
-          {/* Typing Indicator */}
-          {typingUsers.length > 0 && (
-            <div className="text-sm text-gray-500 italic mt-4 flex items-center space-x-2">
-              <div className="flex space-x-1">
-                <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-              </div>
-              <span>
-                {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
-              </span>
-            </div>
-          )}
-
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Enhanced Message Input */}
-        <ChatInput 
-          onSendMessage={handleSendMessage} 
+        <ChatInput
+          onSendMessage={handleSendMessage}
           onTyping={setTyping}
           onImageUpload={handleImageUpload}
         />
       </div>
 
-      {/* Enhanced User List */}
       {showUsers && (
-        <UserList 
-          users={users} 
+        <UserList
+          users={users}
           onClose={() => setShowUsers(false)}
           currentUser={username}
           onPrivateMessage={handlePrivateMessage}

@@ -1,184 +1,122 @@
-// server.js - Main server file for Socket.io chat application
+import express from 'express';
+import http from 'http';
+import { Server } from 'socket.io';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import dotenv from 'dotenv';
 
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const path = require('path');
-const mongoose = require('mongoose');
-
-// Load environment variables
 dotenv.config();
 
-// Initialize Express app
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
+  cors: { origin: 'http://localhost:5173', methods: ['GET', 'POST'] },
 });
 
-// Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// ========================
-//  MongoDB Connection
-// ========================
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+// ---------------- MONGOOSE SETUP ----------------
+mongoose
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log('✅ Connected to MongoDB'))
+  .catch((err) => console.error('❌ MongoDB connection error:', err));
 
-// ========================
-//  MongoDB Schemas
-// ========================
-const messageSchema = new mongoose.Schema({
-  sender: String,
-  senderId: String,
-  message: String,
-  timestamp: { type: Date, default: Date.now },
-  isPrivate: { type: Boolean, default: false },
-});
+// ---------------- MESSAGE MODEL ----------------
+const messageSchema = new mongoose.Schema(
+  {
+    username: String,
+    room: String,
+    content: String,
+    edited: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
 
 const Message = mongoose.model('Message', messageSchema);
 
-// ========================
-//  In-memory Data Stores
-// ========================
-const users = {};
-const typingUsers = {};
+// ---------------- EXPRESS ROUTES ----------------
 
-// ========================
-//  Socket.io Logic
-// ========================
+// Fetch all messages for a room
+app.get('/api/messages/:room', async (req, res) => {
+  try {
+    const messages = await Message.find({ room: req.params.room }).sort({ createdAt: 1 });
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- SOCKET.IO HANDLERS ----------------
 io.on('connection', (socket) => {
-  console.log(`🟢 User connected: ${socket.id}`);
+  console.log('🟢 User connected:', socket.id);
 
-  // Handle user joining
-  socket.on('user_join', (username) => {
-    users[socket.id] = { username, id: socket.id };
-    io.emit('user_list', Object.values(users));
-    io.emit('user_joined', { username, id: socket.id });
-    console.log(`👤 ${username} joined the chat`);
+  // Join a room
+  socket.on('joinRoom', async (room) => {
+    socket.join(room);
+    console.log(`📥 ${socket.id} joined room: ${room}`);
+
+    // Send room history on join
+    const roomMessages = await Message.find({ room }).sort({ createdAt: 1 });
+    socket.emit('roomMessages', roomMessages);
   });
 
-  // Handle sending a chat message
-  socket.on('send_message', async (messageData) => {
-    if (!users[socket.id]) return;
-
-    const message = {
-      sender: users[socket.id].username,
-      senderId: socket.id,
-      message: messageData.message,
-      timestamp: new Date(),
-      isPrivate: false,
-    };
-
+  // Send a new message
+  socket.on('sendMessage', async ({ username, room, content }) => {
     try {
-      const savedMessage = await Message.create(message);
-      io.emit('receive_message', savedMessage);
+      const message = new Message({ username, room, content });
+      await message.save();
+      io.to(room).emit('messageReceived', message);
+      console.log(`💬 New message from ${username} in ${room}`);
     } catch (err) {
       console.error('❌ Error saving message:', err);
     }
   });
 
-  // Handle typing indicator
-  socket.on('typing', (isTyping) => {
-    if (users[socket.id]) {
-      const username = users[socket.id].username;
-      if (isTyping) typingUsers[socket.id] = username;
-      else delete typingUsers[socket.id];
-      io.emit('typing_users', Object.values(typingUsers));
-    }
-  });
-
-  // Handle private messages
-  socket.on('private_message', async ({ to, message }) => {
-    if (!users[socket.id]) return;
-
-    const messageData = {
-      sender: users[socket.id].username,
-      senderId: socket.id,
-      message,
-      timestamp: new Date(),
-      isPrivate: true,
-    };
-
+  // ✅ Edit Message
+  socket.on('editMessage', async ({ messageId, newText, room }) => {
     try {
-      const savedPrivateMessage = await Message.create(messageData);
-      socket.to(to).emit('private_message', savedPrivateMessage);
-      socket.emit('private_message', savedPrivateMessage);
+      const updated = await Message.findByIdAndUpdate(
+        messageId,
+        { content: newText, edited: true },
+        { new: true }
+      );
+
+      if (updated) {
+        io.to(room).emit('messageEdited', {
+          messageId,
+          newText,
+          edited: true,
+        });
+        console.log(`✏️ Message edited (${messageId}) in ${room}`);
+      }
     } catch (err) {
-      console.error('❌ Error saving private message:', err);
+      console.error('❌ Error editing message:', err);
     }
   });
 
-  // Handle disconnection
+  // ✅ Delete Message
+  socket.on('deleteMessage', async ({ messageId, room }) => {
+    try {
+      const deleted = await Message.findByIdAndDelete(messageId);
+      if (deleted) {
+        io.to(room).emit('messageDeleted', { messageId });
+        console.log(`🗑️ Message deleted (${messageId}) from ${room}`);
+      }
+    } catch (err) {
+      console.error('❌ Error deleting message:', err);
+    }
+  });
+
+  // Disconnect
   socket.on('disconnect', () => {
-    if (users[socket.id]) {
-      const { username } = users[socket.id];
-      io.emit('user_left', { username, id: socket.id });
-      console.log(`🔴 ${username} left the chat`);
-    }
-
-    delete users[socket.id];
-    delete typingUsers[socket.id];
-
-    io.emit('user_list', Object.values(users));
-    io.emit('typing_users', Object.values(typingUsers));
+    console.log('🔴 User disconnected:', socket.id);
   });
 });
 
-// ========================
-//  API Routes
-// ========================
-app.get('/api/messages', async (req, res) => {
-  try {
-    const msgs = await Message.find().sort({ timestamp: 1 }).limit(100);
-    res.json(msgs);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
-});
-
-app.get('/api/users', (req, res) => {
-  res.json(Object.values(users));
-});
-
-// Root route
-app.get('/', (req, res) => {
-  res.send('Socket.io Chat Server is running');
-});
-
-// ========================
-//  Start Server
-// ========================
+// ---------------- SERVER START ----------------
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
-
-// ========================
-//  Graceful Shutdown
-// ========================
-process.on('SIGINT', () => {
-  console.log('\n🛑 Gracefully shutting down...');
-  io.close();
-  server.close(() => {
-    console.log('✅ Server closed.');
-    mongoose.connection.close(false, () => {
-      console.log('🧩 MongoDB connection closed.');
-      process.exit(0);
-    });
-  });
-});
-
-module.exports = { app, server, io };
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
