@@ -34,6 +34,7 @@ const ChatPage = ({ username, onLogout }) => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+  
 
   useEffect(() => {
     if (messages.length > prevMessagesLengthRef.current) {
@@ -102,9 +103,11 @@ const ChatPage = ({ username, onLogout }) => {
     console.log('Delete message:', messageId);
   };
 
-  const handlePrivateMessage = (userId, username) => {
-    console.log('Start private chat with:', username);
-    // You can implement private messaging logic here
+  // In ChatPage.jsx - handlePrivateMessage
+const handlePrivateMessage = (userId, username) => {
+    const privateRoomId = `private-${Math.min(userId, socket.id)}-${Math.max(userId, socket.id)}`;
+    joinRoom(privateRoomId);
+    // Open private chat UI
   };
 
   const handleExportChat = () => {

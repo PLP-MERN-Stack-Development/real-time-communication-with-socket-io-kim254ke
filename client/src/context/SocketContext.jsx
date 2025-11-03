@@ -1,5 +1,5 @@
 // ==========================================
-// client/src/context/SocketContext.jsx
+// client/src/context/SocketContext.jsx - FIXED & ENHANCED
 // ==========================================
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import socket from '../socket/socket';
@@ -20,6 +20,7 @@ export const SocketProvider = ({ children }) => {
   const [users, setUsers] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
   const [currentRoom, setCurrentRoom] = useState('general');
+  const [username, setUsername] = useState('');
 
   useEffect(() => {
     // Connection events
@@ -27,10 +28,12 @@ export const SocketProvider = ({ children }) => {
       console.log('✅ Connected to server');
       setIsConnected(true);
     });
+    
     socket.on('disconnect', () => {
       console.log('❌ Disconnected from server');
       setIsConnected(false);
     });
+    
     socket.on('connect_error', (error) => {
       console.error('Connection error:', error);
       setIsConnected(false);
@@ -38,38 +41,39 @@ export const SocketProvider = ({ children }) => {
 
     // Message events
     socket.on('receive_message', (message) => {
+      console.log('📩 Received message:', message);
       setMessages((prev) => [...prev, message]);
     });
+    
     socket.on('message_history', (history) => {
+      console.log('📜 Received message history:', history.length, 'messages');
       setMessages(history);
     });
-    socket.on('private_message', (message) => {
-      setMessages((prev) => [...prev, message]);
+    
+    socket.on('message_updated', (updatedMessage) => {
+      console.log('🔄 Message updated:', updatedMessage.id);
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === updatedMessage.id ? updatedMessage : msg))
+      );
     });
 
     // User events
     socket.on('user_list', (userList) => {
+      console.log('👥 User list updated:', userList.length, 'users');
       setUsers(userList);
     });
-    socket.on('user_joined', (user) => {
+    
+    socket.on('notification', (notification) => {
+      console.log('🔔 Notification:', notification.message);
+      // Add system message for notifications
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now(),
+          id: `notif-${Date.now()}`,
           system: true,
-          message: `${user.username} joined the chat`,
+          message: notification.message,
           timestamp: new Date().toISOString(),
-        },
-      ]);
-    });
-    socket.on('user_left', (user) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          system: true,
-          message: `${user.username} left the chat`,
-          timestamp: new Date().toISOString(),
+          room: notification.room,
         },
       ]);
     });
@@ -80,54 +84,127 @@ export const SocketProvider = ({ children }) => {
     });
 
     // Room events
-    socket.on('room_joined', ({ room }) => {
+    socket.on('room_joined', (room) => {
+      console.log('🚪 Joined room:', room);
       setCurrentRoom(room);
     });
 
-    // Cleanup: Remove all listeners when the component unmounts
+    socket.on('available_rooms', (rooms) => {
+      console.log('🏠 Available rooms:', rooms);
+    });
+
+    // Cleanup
     return () => {
       socket.off('connect');
       socket.off('disconnect');
       socket.off('connect_error');
       socket.off('receive_message');
       socket.off('message_history');
-      socket.off('private_message');
+      socket.off('message_updated');
       socket.off('user_list');
-      socket.off('user_joined');
-      socket.off('user_left');
+      socket.off('notification');
       socket.off('typing_users');
       socket.off('room_joined');
+      socket.off('available_rooms');
     };
   }, []);
 
-  const connect = (username) => {
+  // ===== CONNECTION =====
+  const connect = (user) => {
+    setUsername(user);
     socket.connect();
-    socket.emit('user_join', username);
+    socket.emit('user_join', user);
   };
+
   const disconnect = () => {
     socket.disconnect();
+    setUsername('');
   };
-  const sendMessage = (message, room = 'general') => {
-    socket.emit('send_message', { message, room });
+
+  // ===== MESSAGING =====
+  const sendMessage = (message, room = null) => {
+    const targetRoom = room || currentRoom;
+    console.log('📤 Sending message to room:', targetRoom, '- Message:', message);
+    
+    socket.emit('send_message', { 
+      message, 
+      room: targetRoom 
+    });
+
+    // Optimistic UI update - add message immediately
+    const optimisticMessage = {
+      id: `temp-${Date.now()}`,
+      sender: username,
+      senderId: socket.id,
+      message,
+      room: targetRoom,
+      timestamp: new Date().toISOString(),
+      delivered: false,
+      read: false,
+      reactions: [],
+    };
+    
+    setMessages((prev) => [...prev, optimisticMessage]);
   };
-  const sendPrivateMessage = (to, message) => {
-    socket.emit('private_message', { to, message });
+
+  const sendImage = (imageData, caption, room = null) => {
+    const targetRoom = room || currentRoom;
+    console.log('📤 Sending image to room:', targetRoom);
+    
+    socket.emit('send_message', { 
+      message: caption || 'Sent an image', 
+      room: targetRoom,
+      image: imageData // Send base64 image
+    });
+
+    // Optimistic UI update
+    const optimisticMessage = {
+      id: `temp-${Date.now()}`,
+      sender: username,
+      senderId: socket.id,
+      message: caption || '',
+      image: imageData,
+      room: targetRoom,
+      timestamp: new Date().toISOString(),
+      delivered: false,
+      read: false,
+      reactions: [],
+    };
+    
+    setMessages((prev) => [...prev, optimisticMessage]);
   };
+
+  const sendPrivateMessage = (toUserId, message) => {
+    console.log('📤 Sending private message to:', toUserId);
+    socket.emit('private_message', { toUserId, message });
+  };
+
+  // ===== TYPING =====
   const setTyping = (isTyping) => {
-    socket.emit('typing', isTyping);
+    if (isTyping) {
+      socket.emit('typing_start');
+    } else {
+      socket.emit('typing_stop');
+    }
   };
+
+  // ===== ROOMS =====
   const joinRoom = (room) => {
+    console.log('🚪 Joining room:', room);
     socket.emit('join_room', room);
     setCurrentRoom(room);
   };
-  const leaveRoom = (room) => {
-    socket.emit('leave_room', room);
-  };
+
+  // ===== REACTIONS =====
   const addReaction = (messageId, emoji) => {
+    console.log('👍 Adding reaction to message:', messageId, '- Emoji:', emoji);
     socket.emit('add_reaction', { messageId, emoji });
   };
+
+  // ===== READ RECEIPTS =====
   const markMessageAsRead = (messageId) => {
-    socket.emit('message_read', messageId);
+    console.log('✅ Marking message as read:', messageId);
+    socket.emit('message_read', { messageId });
   };
 
   const value = {
@@ -137,13 +214,14 @@ export const SocketProvider = ({ children }) => {
     users,
     typingUsers,
     currentRoom,
+    username,
     connect,
     disconnect,
     sendMessage,
+    sendImage,
     sendPrivateMessage,
     setTyping,
     joinRoom,
-    leaveRoom,
     addReaction,
     markMessageAsRead,
   };

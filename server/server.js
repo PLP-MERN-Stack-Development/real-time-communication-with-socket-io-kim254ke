@@ -6,6 +6,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const mongoose = require('mongoose');
 
 // Load environment variables
 dotenv.config();
@@ -26,71 +27,98 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Store connected users and messages
+// ========================
+//  MongoDB Connection
+// ========================
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
+
+// ========================
+//  MongoDB Schemas
+// ========================
+const messageSchema = new mongoose.Schema({
+  sender: String,
+  senderId: String,
+  message: String,
+  timestamp: { type: Date, default: Date.now },
+  isPrivate: { type: Boolean, default: false },
+});
+
+const Message = mongoose.model('Message', messageSchema);
+
+// ========================
+//  In-memory Data Stores
+// ========================
 const users = {};
-const messages = [];
 const typingUsers = {};
 
-// Socket.io connection handler
+// ========================
+//  Socket.io Logic
+// ========================
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`🟢 User connected: ${socket.id}`);
 
   // Handle user joining
   socket.on('user_join', (username) => {
     users[socket.id] = { username, id: socket.id };
     io.emit('user_list', Object.values(users));
     io.emit('user_joined', { username, id: socket.id });
-    console.log(`${username} joined the chat`);
+    console.log(`👤 ${username} joined the chat`);
   });
 
-  // Handle chat messages
-  socket.on('send_message', (messageData) => {
+  // Handle sending a chat message
+  socket.on('send_message', async (messageData) => {
+    if (!users[socket.id]) return;
+
     const message = {
-      ...messageData,
-      id: Date.now(),
-      sender: users[socket.id]?.username || 'Anonymous',
+      sender: users[socket.id].username,
       senderId: socket.id,
-      timestamp: new Date().toISOString(),
+      message: messageData.message,
+      timestamp: new Date(),
+      isPrivate: false,
     };
-    
-    messages.push(message);
-    
-    // Limit stored messages to prevent memory issues
-    if (messages.length > 100) {
-      messages.shift();
+
+    try {
+      const savedMessage = await Message.create(message);
+      io.emit('receive_message', savedMessage);
+    } catch (err) {
+      console.error('❌ Error saving message:', err);
     }
-    
-    io.emit('receive_message', message);
   });
 
   // Handle typing indicator
   socket.on('typing', (isTyping) => {
     if (users[socket.id]) {
       const username = users[socket.id].username;
-      
-      if (isTyping) {
-        typingUsers[socket.id] = username;
-      } else {
-        delete typingUsers[socket.id];
-      }
-      
+      if (isTyping) typingUsers[socket.id] = username;
+      else delete typingUsers[socket.id];
       io.emit('typing_users', Object.values(typingUsers));
     }
   });
 
   // Handle private messages
-  socket.on('private_message', ({ to, message }) => {
+  socket.on('private_message', async ({ to, message }) => {
+    if (!users[socket.id]) return;
+
     const messageData = {
-      id: Date.now(),
-      sender: users[socket.id]?.username || 'Anonymous',
+      sender: users[socket.id].username,
       senderId: socket.id,
       message,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(),
       isPrivate: true,
     };
-    
-    socket.to(to).emit('private_message', messageData);
-    socket.emit('private_message', messageData);
+
+    try {
+      const savedPrivateMessage = await Message.create(messageData);
+      socket.to(to).emit('private_message', savedPrivateMessage);
+      socket.emit('private_message', savedPrivateMessage);
+    } catch (err) {
+      console.error('❌ Error saving private message:', err);
+    }
   });
 
   // Handle disconnection
@@ -98,20 +126,27 @@ io.on('connection', (socket) => {
     if (users[socket.id]) {
       const { username } = users[socket.id];
       io.emit('user_left', { username, id: socket.id });
-      console.log(`${username} left the chat`);
+      console.log(`🔴 ${username} left the chat`);
     }
-    
+
     delete users[socket.id];
     delete typingUsers[socket.id];
-    
+
     io.emit('user_list', Object.values(users));
     io.emit('typing_users', Object.values(typingUsers));
   });
 });
 
-// API routes
-app.get('/api/messages', (req, res) => {
-  res.json(messages);
+// ========================
+//  API Routes
+// ========================
+app.get('/api/messages', async (req, res) => {
+  try {
+    const msgs = await Message.find().sort({ timestamp: 1 }).limit(100);
+    res.json(msgs);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
 });
 
 app.get('/api/users', (req, res) => {
@@ -123,10 +158,27 @@ app.get('/', (req, res) => {
   res.send('Socket.io Chat Server is running');
 });
 
-// Start server
+// ========================
+//  Start Server
+// ========================
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
-module.exports = { app, server, io }; 
+// ========================
+//  Graceful Shutdown
+// ========================
+process.on('SIGINT', () => {
+  console.log('\n🛑 Gracefully shutting down...');
+  io.close();
+  server.close(() => {
+    console.log('✅ Server closed.');
+    mongoose.connection.close(false, () => {
+      console.log('🧩 MongoDB connection closed.');
+      process.exit(0);
+    });
+  });
+});
+
+module.exports = { app, server, io };
