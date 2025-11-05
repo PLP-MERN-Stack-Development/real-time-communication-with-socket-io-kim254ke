@@ -1,4 +1,4 @@
-// client/src/pages/ChatPage.jsx
+// client/src/pages/ChatPage.jsx (FIXED - Using MongoDB _id)
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Users, Bell, Download } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
@@ -19,7 +19,9 @@ const ChatPage = ({ username, onLogout }) => {
     sendMessage,
     setTyping,
     joinRoom,
-    socket
+    editMessage,
+    deleteMessage,
+    addReaction,
   } = useSocket();
 
   const { notify } = useNotification();
@@ -29,22 +31,16 @@ const ChatPage = ({ username, onLogout }) => {
   const [notifications, setNotifications] = useState(0);
   const [unreadCounts, setUnreadCounts] = useState({});
   const [reactions, setReactions] = useState({});
-  const [localMessages, setLocalMessages] = useState(messages);
   const messagesEndRef = useRef(null);
   const prevMessagesLengthRef = useRef(messages.length);
 
-  // Keep local messages synced with server messages
   useEffect(() => {
-    setLocalMessages(messages);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [localMessages]);
-
-  useEffect(() => {
-    if (localMessages.length > prevMessagesLengthRef.current) {
-      const newMessage = localMessages[localMessages.length - 1];
+    if (messages.length > prevMessagesLengthRef.current) {
+      const newMessage = messages[messages.length - 1];
       if (newMessage && !newMessage.system && newMessage.sender !== username) {
         if (newMessage.room !== currentRoom) {
           setUnreadCounts(prev => ({
@@ -56,8 +52,8 @@ const ChatPage = ({ username, onLogout }) => {
         }
       }
     }
-    prevMessagesLengthRef.current = localMessages.length;
-  }, [localMessages, currentRoom, username, notify]);
+    prevMessagesLengthRef.current = messages.length;
+  }, [messages, currentRoom, username, notify]);
 
   const handleRoomChange = room => {
     joinRoom(room);
@@ -89,58 +85,23 @@ const ChatPage = ({ username, onLogout }) => {
   };
 
   const handleAddReaction = (messageId, emoji) => {
+    addReaction(messageId, emoji);
     setReactions(prev => ({
       ...prev,
       [messageId]: [...(prev[messageId] || []), emoji]
     }));
   };
 
-  // ✅ Edit Message Feature
+  // ✅ FIXED: Use MongoDB _id instead of custom id
   const handleEditMessage = (messageId, newText) => {
     if (!messageId) return;
-
-    const updated = localMessages.map(msg =>
-      msg.id === messageId ? { ...msg, message: newText, edited: true } : msg
-    );
-    setLocalMessages(updated);
-
-    if (socket) socket.emit('editMessage', { messageId, newText, room: currentRoom });
+    editMessage(messageId, newText);
   };
 
-  // ✅ Delete Message Feature
   const handleDeleteMessage = messageId => {
     if (!messageId) return;
-
-    const updated = localMessages.filter(msg => msg.id !== messageId);
-    setLocalMessages(updated);
-
-    if (socket) socket.emit('deleteMessage', { messageId, room: currentRoom });
+    deleteMessage(messageId);
   };
-
-  // Listen for edits and deletions from others
-  useEffect(() => {
-    if (!socket) return;
-
-    const onEditMessage = ({ messageId, newText }) => {
-      setLocalMessages(prev =>
-        prev.map(msg =>
-          msg.id === messageId ? { ...msg, message: newText, edited: true } : msg
-        )
-      );
-    };
-
-    const onDeleteMessage = ({ messageId }) => {
-      setLocalMessages(prev => prev.filter(msg => msg.id !== messageId));
-    };
-
-    socket.on('messageEdited', onEditMessage);
-    socket.on('messageDeleted', onDeleteMessage);
-
-    return () => {
-      socket.off('messageEdited', onEditMessage);
-      socket.off('messageDeleted', onDeleteMessage);
-    };
-  }, [socket]);
 
   const handlePrivateMessage = (userId, username) => {
     const privateRoomId = `private-${Math.min(userId, socket.id)}-${Math.max(
@@ -154,7 +115,7 @@ const ChatPage = ({ username, onLogout }) => {
     const chatData = filteredMessages
       .map(
         msg =>
-          `[${new Date(msg.timestamp).toLocaleString()}] ${
+          `[${new Date(msg.createdAt || msg.timestamp).toLocaleString()}] ${
             msg.sender
           }: ${msg.message}${msg.edited ? ' (edited)' : ''}`
       )
@@ -168,7 +129,7 @@ const ChatPage = ({ username, onLogout }) => {
     a.click();
   };
 
-  const filteredMessages = localMessages
+  const filteredMessages = messages
     .filter(msg => !msg.room || msg.room === currentRoom)
     .filter(
       msg =>
@@ -191,7 +152,6 @@ const ChatPage = ({ username, onLogout }) => {
       />
 
       <div className="flex-1 flex flex-col">
-        {/* Header */}
         <div className="bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
           <div className="flex items-center justify-between">
             <h1 className="text-2xl font-bold text-gray-800 flex items-center">
@@ -204,7 +164,6 @@ const ChatPage = ({ username, onLogout }) => {
             </h1>
 
             <div className="flex items-center space-x-3">
-              {/* Search */}
               <div className="relative">
                 <input
                   type="text"
@@ -214,17 +173,8 @@ const ChatPage = ({ username, onLogout }) => {
                   className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-purple-600 w-64"
                 />
                 <Search className="w-5 h-5 text-gray-400 absolute left-3 top-2.5" />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600"
-                  >
-                    ×
-                  </button>
-                )}
               </div>
 
-              {/* Export */}
               <button
                 onClick={handleExportChat}
                 className="p-2 hover:bg-gray-100 rounded-lg transition"
@@ -233,56 +183,40 @@ const ChatPage = ({ username, onLogout }) => {
                 <Download className="w-6 h-6 text-gray-600" />
               </button>
 
-              {/* Notifications */}
               {notifications > 0 && (
                 <div className="relative">
                   <Bell className="w-6 h-6 text-gray-600" />
-                  <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center animate-pulse">
+                  <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
                     {notifications}
                   </span>
                 </div>
               )}
 
-              {/* Users */}
               <button
                 onClick={() => setShowUsers(!showUsers)}
-                className={`p-2 hover:bg-gray-100 rounded-lg transition ${
-                  showUsers ? 'bg-purple-100' : ''
-                }`}
-                title="Show users"
+                className="p-2 hover:bg-gray-100 rounded-lg transition"
               >
-                <Users
-                  className={`w-6 h-6 ${
-                    showUsers ? 'text-purple-600' : 'text-gray-600'
-                  }`}
-                />
+                <Users className="w-6 h-6 text-gray-600" />
               </button>
             </div>
           </div>
         </div>
 
-        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-6 bg-gradient-to-b from-gray-50 to-white">
           {filteredMessages.length === 0 ? (
             <div className="text-center text-gray-500 mt-20">
-              <p className="text-lg font-semibold">
-                {searchQuery ? 'No messages found' : 'No messages yet'}
-              </p>
-              <p className="text-sm mt-2">
-                {searchQuery
-                  ? 'Try a different search term'
-                  : 'Start the conversation!'}
-              </p>
+              <p className="text-lg font-semibold">No messages yet</p>
+              <p className="text-sm mt-2">Start the conversation!</p>
             </div>
           ) : (
             <div className="space-y-2">
               {filteredMessages.map((msg, idx) => (
                 <ChatMessage
-                  key={msg.id || idx}
+                  key={msg._id || idx}
                   message={msg}
                   isOwnMessage={msg.sender === username}
                   onAddReaction={handleAddReaction}
-                  reactions={reactions[msg.id]}
+                  reactions={reactions[msg._id]}
                   onEdit={handleEditMessage}
                   onDelete={handleDeleteMessage}
                 />
@@ -290,6 +224,12 @@ const ChatPage = ({ username, onLogout }) => {
             </div>
           )}
           <div ref={messagesEndRef} />
+
+          {typingUsers.length > 0 && (
+            <div className="text-sm text-gray-500 italic mt-2">
+              {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
+            </div>
+          )}
         </div>
 
         <ChatInput
