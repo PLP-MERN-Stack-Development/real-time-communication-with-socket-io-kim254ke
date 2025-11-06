@@ -6,5 +6,8 @@
     "install": "npm --prefix client install && npm --prefix server install",
     "build": "npm --prefix client run build && npm --prefix server run build",
     "start": "npm --prefix server start"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
