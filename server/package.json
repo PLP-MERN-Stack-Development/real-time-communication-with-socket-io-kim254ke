@@ -3,18 +3,13 @@
   "version": "1.0.0",
   "description": "Socket.io chat server with MongoDB integration",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "build": "echo 'No build step for server'"
   },
-  "keywords": [
-    "socket.io",
-    "express",
-    "mongodb",
-    "chat",
-    "nodejs"
-  ],
+  "keywords": ["socket.io", "express", "mongodb", "chat", "nodejs"],
   "author": "tony",
   "license": "ISC",
   "dependencies": {
@@ -26,6 +21,5 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
-  },
-  "type": "module"
+  }
 }
