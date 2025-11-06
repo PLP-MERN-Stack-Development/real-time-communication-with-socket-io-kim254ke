@@ -306,19 +306,3 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 
 
-// ==========================================
-// ADDED STATIC FILE SERVING SECTION (AS IS)
-// ==========================================
-const app2 = express();
-const __dirname2 = path.dirname(fileURLToPath(import.meta.url));
-
-app2.use(express.static(path.join(__dirname2, "public")));
-
-app2.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname2, "public", "index.html"));
-});
-
-const PORT2 = process.env.PORT || 3000;
-app2.listen(PORT2, () => console.log(`Server running on port ${PORT2}`));
-
-
