@@ -1,32 +1,27 @@
 # ---------- Stage 1: Build the client ----------
-FROM node:20-alpine AS client-build
-
-WORKDIR /app/client
-
-COPY client/package*.json ./
-RUN npm install
-
-COPY client/ .
-RUN npm run build
-
-
-# ---------- Stage 2: Build and run the server ----------
-FROM node:20-alpine AS server
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Copy and install server dependencies
-COPY server/package*.json ./server/
-RUN cd server && npm install --production
+COPY package*.json ./
+RUN npm install
 
-# Copy server source
-COPY server ./server
+COPY . .
+RUN npm run build
 
-# Copy built client into server's public folder
-COPY --from=client-build /app/client/dist ./server/public
+# ---------- Stage 2: Serve the built files ----------
+FROM node:20-alpine AS serve
 
-# Expose backend port (Railway detects this automatically)
-EXPOSE 5000
+WORKDIR /app
 
-# Start the server
-CMD ["npm", "start", "--prefix", "server"]
+# Install a lightweight static file server
+RUN npm install -g serve
+
+# Copy the build output from the previous stage
+COPY --from=build /app/dist ./dist
+
+# Expose Vercel’s default port
+EXPOSE 3000
+
+# Command to serve the static files
+CMD ["serve", "-s", "dist", "-l", "3000"]

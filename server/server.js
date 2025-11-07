@@ -8,8 +8,8 @@ import { Server } from 'socket.io';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import path from "path";
-import { fileURLToPath } from "url";
+
+
 
 dotenv.config();
 
@@ -17,13 +17,30 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { 
-    origin: process.env.CLIENT_URL || 'http://localhost:5173', 
-    methods: ['GET', 'POST'],
+    origin: [
+      process.env.CLIENT_URL,
+      'https://chat-app-client-9xi8.vercel.app', // Your production URL
+      'http://localhost:5173', // Local development
+      'http://localhost:3000'
+    ].filter(Boolean), // Remove undefined values
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   },
+  transports: ['websocket', 'polling'],
+  allowEIO3: true, // ← Add this for compatibility
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
-app.use(cors());
+app.use(cors({
+  origin: [
+    process.env.CLIENT_URL,
+    'https://chat-app-client-9xi8.vercel.app',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ].filter(Boolean),
+  credentials: true,
+}));
 app.use(express.json());
 
 // ---------------- MONGOOSE SETUP ----------------
@@ -67,8 +84,25 @@ app.get('/api/messages/:room', async (req, res) => {
   }
 });
 
+// app.get('/api/health', (req, res) => {
+//   res.json({ status: 'ok', users: Object.keys(users).length });
+// });
+
+// Add this BEFORE your socket.io handlers
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'Chat Server Running ✅',
+    timestamp: new Date(),
+    socketIO: 'Active'
+  });
+});
+
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', users: Object.keys(users).length });
+  res.json({ 
+    status: 'ok', 
+    users: Object.keys(users).length,
+    timestamp: new Date()
+  });
 });
 
 // ---------------- SOCKET.IO HANDLERS ----------------
@@ -304,14 +338,3 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-app.use(express.static(path.join(__dirname, "public")));
-
-// ✅ Use a regular expression instead of a string pattern
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
